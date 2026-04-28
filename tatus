@@ -1,0 +1,121 @@
+warning: in the working copy of 'backend/app/core/config.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/app/db.py', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/backend/app/core/config.py b/backend/app/core/config.py[m
+[1mindex d6f3b45..d40165a 100644[m
+[1m--- a/backend/app/core/config.py[m
+[1m+++ b/backend/app/core/config.py[m
+[36m@@ -1,12 +1,50 @@[m
+[32m+[m[32mimport os[m
+[32m+[m
+ from pydantic_settings import BaseSettings, SettingsConfigDict[m
+ [m
+ [m
+[32m+[m[32mLOCAL_DATABASE_URL = "postgresql+psycopg://laboratobi:laboratobi@db:5432/laboratobi"[m
+[32m+[m[32mPSYCOPG_SCHEME = "postgresql+psycopg://"[m
+[32m+[m[32mPOSTGRESQL_SCHEME = "postgresql://"[m
+[32m+[m[32mPOSTGRES_SCHEME = "postgres://"[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef resolve_database_url([m
+[32m+[m[32m    database_url: str | None = None,[m
+[32m+[m[32m    app_env: str = "development",[m
+[32m+[m[32m) -> str:[m
+[32m+[m[32m    raw_url = database_url if database_url is not None else os.getenv("DATABASE_URL")[m
+[32m+[m[32m    if raw_url is None:[m
+[32m+[m[32m        if app_env.strip().lower() == "development":[m
+[32m+[m[32m            raw_url = LOCAL_DATABASE_URL[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            raise ValueError([m
+[32m+[m[32m                "DATABASE_URL no esta configurada; el fallback local solo se usa "[m
+[32m+[m[32m                "en desarrollo."[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m    resolved_url = raw_url.strip()[m
+[32m+[m[32m    if not resolved_url:[m
+[32m+[m[32m        raise ValueError("DATABASE_URL esta vacia despues de aplicar strip().")[m
+[32m+[m[32m    if "${{" in resolved_url or "}}" in resolved_url:[m
+[32m+[m[32m        raise ValueError([m
+[32m+[m[32m            "DATABASE_URL contiene una referencia de Railway sin resolver. "[m
+[32m+[m[32m            "Configura DATABASE_URL como reference variable del servicio Postgres, "[m
+[32m+[m[32m            "por ejemplo ${{Postgres.DATABASE_URL}}."[m
+[32m+[m[32m        )[m
+[32m+[m[32m    if resolved_url.startswith(PSYCOPG_SCHEME):[m
+[32m+[m[32m        return resolved_url[m
+[32m+[m[32m    if resolved_url.startswith(POSTGRESQL_SCHEME):[m
+[32m+[m[32m        return f"{PSYCOPG_SCHEME}{resolved_url[len(POSTGRESQL_SCHEME):]}"[m
+[32m+[m[32m    if resolved_url.startswith(POSTGRES_SCHEME):[m
+[32m+[m[32m        return f"{PSYCOPG_SCHEME}{resolved_url[len(POSTGRES_SCHEME):]}"[m
+[32m+[m[32m    return resolved_url[m
+[32m+[m
+[32m+[m
+ class Settings(BaseSettings):[m
+     app_name: str = "LaboraTobi API"[m
+     app_env: str = "development"[m
+[31m-    database_url: str = ([m
+[31m-        "postgresql+psycopg://laboratobi:laboratobi@db:5432/laboratobi"[m
+[31m-    )[m
+[32m+[m[32m    database_url: str | None = None[m
+     cors_origins: list[str] = ["http://localhost:3000"][m
+     pgn_data_dir: str = "data/pgn"[m
+     stockfish_path: str | None = None[m
+[36m@@ -17,5 +55,9 @@[m [mclass Settings(BaseSettings):[m
+         case_sensitive=False,[m
+     )[m
+ [m
+[32m+[m[32m    @property[m
+[32m+[m[32m    def resolved_database_url(self) -> str:[m
+[32m+[m[32m        return resolve_database_url(self.database_url, self.app_env)[m
+[32m+[m
+ [m
+ settings = Settings()[m
+[1mdiff --git a/backend/app/db.py b/backend/app/db.py[m
+[1mindex b5f8f8d..b5f12bf 100644[m
+[1m--- a/backend/app/db.py[m
+[1m+++ b/backend/app/db.py[m
+[36m@@ -1,17 +1,45 @@[m
+[32m+[m[32mimport logging[m
+ from collections.abc import Generator[m
+ [m
+ from sqlalchemy import create_engine, inspect, select, text[m
+[32m+[m[32mfrom sqlalchemy.engine import make_url[m
+ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker[m
+ [m
+ from app.core.config import settings[m
+ from app.services.pgn_utils import compute_pgn_hash[m
+ [m
+[32m+[m[32mlogger = logging.getLogger(__name__)[m
+[32m+[m
+ [m
+ class Base(DeclarativeBase):[m
+     pass[m
+ [m
+ [m
+[31m-engine = create_engine(settings.database_url, pool_pre_ping=True)[m
+[32m+[m[32mdef sanitize_database_url(database_url: str) -> str:[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        return make_url(database_url).render_as_string(hide_password=True)[m
+[32m+[m[32m    except Exception:[m
+[32m+[m[32m        return "<DATABASE_URL invalida o no sanitizable>"[m
+[32m+[m
+[32m+[m
+[32m+[m[32mtry:[m
+[32m+[m[32m    database_url = settings.resolved_database_url[m
+[32m+[m[32mexcept ValueError:[m
+[32m+[m[32m    logger.exception("No se pudo resolver DATABASE_URL para SQLAlchemy.")[m
+[32m+[m[32m    raise[m
+[32m+[m
+[32m+[m[32mlogger.info("Usando DATABASE_URL: %s", sanitize_database_url(database_url))[m
+[32m+[m
+[32m+[m[32mtry:[m
+[32m+[m[32m    engine = create_engine(database_url, pool_pre_ping=True)[m
+[32m+[m[32mexcept Exception:[m
+[32m+[m[32m    logger.exception([m
+[32m+[m[32m        "No se pudo crear el engine de SQLAlchemy. Revisa el formato de "[m
+[32m+[m[32m        "DATABASE_URL, credenciales y que Railway haya resuelto la reference "[m
+[32m+[m[32m        "variable del servicio Postgres."[m
+[32m+[m[32m    )[m
+[32m+[m[32m    raise[m
+[32m+[m
+ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)[m
+ [m
+ GAME_COMPATIBILITY_COLUMNS: dict[str, str] = {[m

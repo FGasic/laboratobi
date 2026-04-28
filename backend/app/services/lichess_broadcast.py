@@ -29,8 +29,11 @@ def fetch_broadcast_round_data(
     round_id: str | None,
     round_url: str | None = None,
 ) -> dict[str, Any]:
-    resolved_round_id = resolve_round_id(round_id=round_id, round_url=round_url)
-    round_metadata = fetch_round_metadata(resolved_round_id)
+    candidate_round_ids = resolve_broadcast_round_identifier_candidates(
+        round_url=round_url,
+        round_id=round_id,
+    )
+    resolved_round_id, round_metadata = fetch_first_round_metadata(candidate_round_ids)
     round_pgn = fetch_round_pgn(resolved_round_id)
 
     metadata_games = round_metadata.get("games")
@@ -71,8 +74,7 @@ def fetch_broadcast_round_preview(
     limit: int,
     include_pgn_text: bool,
 ) -> dict[str, Any]:
-    resolved_round_id = resolve_round_id(round_id=round_id, round_url=round_url)
-    round_data = fetch_broadcast_round_data(round_id=resolved_round_id)
+    round_data = fetch_broadcast_round_data(round_id=round_id, round_url=round_url)
     preview_games = [
         serialize_broadcast_game(
             game,
@@ -96,17 +98,42 @@ def fetch_broadcast_round_preview(
     }
 
 
-def resolve_round_id(*, round_id: str | None, round_url: str | None) -> str:
+def resolve_broadcast_round_identifier(
+    round_url: str | None,
+    round_id: str | None,
+) -> str:
+    candidate_round_ids = resolve_broadcast_round_identifier_candidates(
+        round_url=round_url,
+        round_id=round_id,
+    )
+    if round_id:
+        return candidate_round_ids[0]
+
+    resolved_round_id, _ = fetch_first_round_metadata(candidate_round_ids)
+    return resolved_round_id
+
+
+def resolve_broadcast_round_identifier_candidates(
+    *,
+    round_url: str | None,
+    round_id: str | None,
+) -> list[str]:
     if round_id:
         normalized_round_id = round_id.strip()
         validate_round_id(normalized_round_id)
-        return normalized_round_id
+        return [normalized_round_id]
 
     if not round_url:
         raise BroadcastPreviewError("Provide round_id or round_url.")
 
-    parsed_url = urlparse(round_url)
-    if parsed_url.netloc not in {LICHESS_HOST, f"www.{LICHESS_HOST}"}:
+    normalized_round_url = round_url.strip().rstrip("/")
+    parsed_url = urlparse(normalized_round_url)
+    if parsed_url.scheme not in {"http", "https"}:
+        raise BroadcastPreviewError(
+            "round_url must be a full Lichess Broadcast URL, including https://."
+        )
+
+    if parsed_url.hostname not in {LICHESS_HOST, f"www.{LICHESS_HOST}"}:
         raise BroadcastPreviewError("round_url must point to lichess.org.")
 
     path_segments = [segment for segment in parsed_url.path.split("/") if segment]
@@ -115,9 +142,31 @@ def resolve_round_id(*, round_id: str | None, round_url: str | None) -> str:
             "round_url must point to a concrete Lichess Broadcast round."
         )
 
-    candidate_round_id = path_segments[3]
-    validate_round_id(candidate_round_id)
-    return candidate_round_id
+    candidate_round_ids: list[str] = []
+
+    def append_candidate(candidate: str) -> None:
+        normalized_candidate = candidate.strip()
+        if ROUND_ID_PATTERN.fullmatch(normalized_candidate):
+            if normalized_candidate not in candidate_round_ids:
+                candidate_round_ids.append(normalized_candidate)
+
+    # Lichess browser URLs may be either a pure round URL or a round URL with
+    # the currently selected game id appended.
+    if len(path_segments) >= 5:
+        append_candidate(path_segments[-2])
+    append_candidate(path_segments[-1])
+    append_candidate(path_segments[3])
+
+    if not candidate_round_ids:
+        raise BroadcastPreviewError(
+            "round_url must contain an 8-character Lichess Broadcast round id."
+        )
+
+    return candidate_round_ids
+
+
+def resolve_round_id(*, round_id: str | None, round_url: str | None) -> str:
+    return resolve_broadcast_round_identifier(round_url=round_url, round_id=round_id)
 
 
 def validate_round_id(round_id: str) -> None:
@@ -138,6 +187,23 @@ def fetch_round_metadata(round_id: str) -> dict[str, Any]:
         raise BroadcastPreviewError("Lichess Broadcast metadata response was invalid.")
 
     return payload
+
+
+def fetch_first_round_metadata(round_ids: list[str]) -> tuple[str, dict[str, Any]]:
+    last_not_found_error: BroadcastPreviewError | None = None
+    for round_id in round_ids:
+        try:
+            return round_id, fetch_round_metadata(round_id)
+        except BroadcastPreviewError as exc:
+            if "resource not found" not in str(exc):
+                raise
+            last_not_found_error = exc
+
+    tried_round_ids = ", ".join(round_ids)
+    raise BroadcastPreviewError(
+        "round_url did not resolve to a real Lichess Broadcast round. "
+        f"Tried round id(s): {tried_round_ids}."
+    ) from last_not_found_error
 
 
 def fetch_round_pgn(round_id: str) -> str:

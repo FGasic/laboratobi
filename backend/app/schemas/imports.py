@@ -1,11 +1,45 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+EXAMPLE_ROUND_URL = (
+    "https://lichess.org/broadcast/german-bundesliga-202526/round-10/"
+    "rbWGGERo/tEFEBiBg"
+)
+EXAMPLE_ROUND_ID = "rbWGGERo"
 
 
 class BroadcastPreviewRequest(BaseModel):
-    round_id: str | None = Field(default=None, min_length=8, max_length=8)
-    round_url: str | None = Field(default=None, min_length=1, max_length=500)
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "round_url": EXAMPLE_ROUND_URL,
+                    "limit": 10,
+                    "include_pgn_text": False,
+                },
+                {
+                    "round_id": EXAMPLE_ROUND_ID,
+                    "limit": 10,
+                    "include_pgn_text": False,
+                },
+            ]
+        }
+    )
+
+    round_id: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=8,
+        examples=[EXAMPLE_ROUND_ID],
+    )
+    round_url: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+        examples=[EXAMPLE_ROUND_URL],
+    )
     limit: int = Field(default=10, ge=1, le=50)
     include_pgn_text: bool = False
 
@@ -73,8 +107,39 @@ class BroadcastPreviewResponse(BaseModel):
 
 
 class BroadcastImportRequest(BaseModel):
-    round_id: str = Field(..., min_length=8, max_length=8)
-    external_ids: list[str] = Field(..., min_length=1)
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "round_url": EXAMPLE_ROUND_URL,
+                    "limit": 10,
+                    "include_pgn_text": False,
+                    "generate_critical_moments": True,
+                },
+                {
+                    "round_id": EXAMPLE_ROUND_ID,
+                    "external_ids": ["Sneo1OIK", "L0t3DJNs"],
+                    "generate_critical_moments": True,
+                },
+            ]
+        }
+    )
+
+    round_id: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=8,
+        examples=[EXAMPLE_ROUND_ID],
+    )
+    round_url: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+        examples=[EXAMPLE_ROUND_URL],
+    )
+    external_ids: list[str] | None = Field(default=None, min_length=1)
+    limit: int = Field(default=10, ge=1, le=50)
+    include_pgn_text: bool = False
     allow_low_quality: bool = False
     generate_critical_moments: bool = False
     depth: int | None = Field(default=None, ge=1, le=30)
@@ -84,11 +149,19 @@ class BroadcastImportRequest(BaseModel):
     min_remaining_plies: int = Field(default=4, ge=0, le=200)
 
     @model_validator(mode="after")
-    def normalize_external_ids(self) -> "BroadcastImportRequest":
+    def normalize_payload(self) -> "BroadcastImportRequest":
+        if self.round_id:
+            self.round_id = self.round_id.strip()
+        if self.round_url:
+            self.round_url = self.round_url.strip()
+        if not self.round_id and not self.round_url:
+            raise ValueError("Provide round_id or round_url.")
+        if self.external_ids is None:
+            return self
+
         normalized_external_ids: list[str] = []
         seen_external_ids: set[str] = set()
 
-        self.round_id = self.round_id.strip()
         for external_id in self.external_ids:
             normalized_external_id = external_id.strip()
             if not normalized_external_id:
@@ -101,7 +174,10 @@ class BroadcastImportRequest(BaseModel):
             normalized_external_ids.append(normalized_external_id)
 
         if not normalized_external_ids:
-            raise ValueError("Provide at least one external_id.")
+            raise ValueError(
+                "Provide at least one external_id, or omit external_ids to import "
+                "games from the round preview."
+            )
 
         self.external_ids = normalized_external_ids
         return self

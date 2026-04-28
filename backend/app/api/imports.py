@@ -66,7 +66,10 @@ def import_broadcast_games(
     db: SessionDep,
 ) -> BroadcastImportResponse:
     try:
-        round_data = fetch_broadcast_round_data(round_id=payload.round_id)
+        round_data = fetch_broadcast_round_data(
+            round_id=payload.round_id,
+            round_url=payload.round_url,
+        )
     except BroadcastPreviewError as exc:
         raise_http_from_broadcast_error(exc)
 
@@ -88,10 +91,15 @@ def import_broadcast_games(
         for game in round_data["games"]
         if game.get("external_id")
     }
+    requested_external_ids = resolve_requested_external_ids(
+        round_data=round_data,
+        explicit_external_ids=payload.external_ids,
+        limit=payload.limit,
+    )
     imported_games: list[dict[str, object]] = []
     skipped_games: list[dict[str, object]] = []
 
-    for external_id in payload.external_ids:
+    for external_id in requested_external_ids:
         game_data = games_by_external_id.get(external_id)
         if game_data is None:
             skipped_games.append(
@@ -226,7 +234,7 @@ def import_broadcast_games(
         round_name=round_data["round_name"],
         quality=quality,
         generate_critical_moments=payload.generate_critical_moments,
-        requested_count=len(payload.external_ids),
+        requested_count=len(requested_external_ids),
         imported_count=len(imported_games),
         skipped_count=len(skipped_games),
         analyzed_count=analyzed_count,
@@ -234,6 +242,39 @@ def import_broadcast_games(
         imported_games=imported_games,
         skipped_games=skipped_games,
     )
+
+
+def resolve_requested_external_ids(
+    *,
+    round_data: dict[str, object],
+    explicit_external_ids: list[str] | None,
+    limit: int,
+) -> list[str]:
+    if explicit_external_ids is not None:
+        return explicit_external_ids
+
+    games = round_data.get("games")
+    if not isinstance(games, list):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Lichess Broadcast response did not include games to import.",
+        )
+
+    external_ids = [
+        game["external_id"]
+        for game in games[:limit]
+        if isinstance(game, dict) and isinstance(game.get("external_id"), str)
+    ]
+    if not external_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "No importable Lichess game ids were found in this Broadcast round. "
+                "Try a different round_url or provide explicit external_ids."
+            ),
+        )
+
+    return external_ids
 
 
 def raise_http_from_broadcast_error(exc: BroadcastPreviewError) -> None:

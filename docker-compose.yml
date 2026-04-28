@@ -1,0 +1,63 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: laboratobi-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-laboratobi}
+      POSTGRES_USER: ${POSTGRES_USER:-laboratobi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-laboratobi}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-laboratobi} -d ${POSTGRES_DB:-laboratobi}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    container_name: laboratobi-backend
+    environment:
+      APP_NAME: LaboraTobi API
+      APP_ENV: development
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://laboratobi:laboratobi@db:5432/laboratobi}
+      CORS_ORIGINS: '["http://localhost:3000"]'
+      PGN_DATA_DIR: ${PGN_DATA_DIR:-data/pgn}
+      STOCKFISH_PATH: ${STOCKFISH_PATH:-/usr/games/stockfish}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: laboratobi-frontend
+    environment:
+      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://backend:8000}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+    command: sh -c "npm install && npm run dev"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  frontend_node_modules:
+  frontend_next:

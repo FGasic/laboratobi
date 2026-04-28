@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.next/
+node_modules/
+dist/
+coverage/
+data/postgres/
+logs/
+*.log
+*.err.log
+backend/app/tools/stockfish.exe

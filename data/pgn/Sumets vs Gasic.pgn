@@ -1,0 +1,30 @@
+﻿[Event "Rapide Francia"]
+[Site "?"]
+[Date "2026.03.23"]
+[Round "?"]
+[White "Sumets, Andrey"]
+[Black "Gasic, Franco"]
+[Result "1/2-1/2"]
+[ECO "A57"]
+[Annotator "Franco"]
+[PlyCount "81"]
+[EventDate "2023.01.12"]
+[SourceTitle "EXT 2023"]
+[Source "ChessBase"]
+[SourceDate "2022.10.05"]
+[SourceVersion "1"]
+[SourceVersionDate "2022.10.05"]
+[SourceQuality "1"]
+
+{[%evp 0,81,27,27,29,-10,29,36,57,-12,18,38,26,-8,10,-12,10,13,15,6,15,0,-18,
+-18,-16,-16,-22,-32,-3,-3,-3,0,37,36,106,106,70,89,117,96,100,70,104,70,62,51,
+76,53,76,102,87,81,86,23,67,0,0,-75,-66,-109,-101,-115,-125,-213,-215,-248,
+-269,-283,-162,-309,-244,-225,-231,-343,-351,-356,-354,-373,-228,-243,-59,-50,
+-50,-50]} 1. d4 Nf6 2. c4 c5 3. d5 b5 4. Qc2 b4 5. e4 d6 6. b3 g6 7. Bb2 Bg7 8.
+Nd2 O-O 9. Bd3 a5 10. a4 bxa3 11. Rxa3 Na6 12. Qb1 Nb4 13. Ne2 Ng4 14. Bxg7
+Kxg7 15. O-O f5 16. exf5 Nxd3 17. Qxd3 Bxf5 18. Qc3+ Kg8 19. Ng3 Qd7 20. h3 Ne5
+21. f4 Nd3 22. Kh2 Nb4 23. Raa1 a4 24. bxa4 Rxa4 25. Rxa4 Qxa4 26. Ra1 Qc2 27.
+Qxc2 Bxc2 28. Rf1 Bd3 29. Rf3 Ra8 30. Nge4 Ra2 31. h4 Rc2 32. h5 gxh5 33. f5
+Bxc4 34. Rg3+ Kf7 35. f6 Nxd5 36. Rg7+ Kf8 37. fxe7+ Nxe7 38. Rxh7 Bd5 39. Rxh5
+Bxe4 40. Nxe4 d5 41. Nf6 1/2-1/2
+

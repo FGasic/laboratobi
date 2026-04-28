@@ -2,7 +2,7 @@ import logging
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, inspect, select, text
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
@@ -15,28 +15,32 @@ class Base(DeclarativeBase):
     pass
 
 
-def sanitize_database_url(database_url: str) -> str:
+def sanitize_database_url(database_url: URL | str) -> str:
     try:
-        return make_url(database_url).render_as_string(hide_password=True)
+        url = database_url if isinstance(database_url, URL) else make_url(database_url)
+        return url.render_as_string(hide_password=True)
     except Exception:
         return "<DATABASE_URL invalida o no sanitizable>"
 
 
 try:
-    database_url = settings.resolved_database_url
+    database_connection = settings.resolved_database_connection
 except ValueError:
-    logger.exception("No se pudo resolver DATABASE_URL para SQLAlchemy.")
+    logger.exception("No se pudo resolver la conexion Postgres para SQLAlchemy.")
     raise
 
+database_url = database_connection.url
+logger.info("Ruta de conexion Postgres usada: %s", database_connection.source)
 logger.info("Usando DATABASE_URL: %s", sanitize_database_url(database_url))
 
 try:
     engine = create_engine(database_url, pool_pre_ping=True)
 except Exception:
     logger.exception(
-        "No se pudo crear el engine de SQLAlchemy. Revisa el formato de "
-        "DATABASE_URL, credenciales y que Railway haya resuelto la reference "
-        "variable del servicio Postgres."
+        "No se pudo crear el engine de SQLAlchemy usando la ruta %s. Revisa "
+        "PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE o DATABASE_URL, segun "
+        "corresponda.",
+        database_connection.source,
     )
     raise
 

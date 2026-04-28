@@ -1,17 +1,45 @@
+import logging
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
 from app.services.pgn_utils import compute_pgn_hash
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+def sanitize_database_url(database_url: str) -> str:
+    try:
+        return make_url(database_url).render_as_string(hide_password=True)
+    except Exception:
+        return "<DATABASE_URL invalida o no sanitizable>"
+
+
+try:
+    database_url = settings.resolved_database_url
+except ValueError:
+    logger.exception("No se pudo resolver DATABASE_URL para SQLAlchemy.")
+    raise
+
+logger.info("Usando DATABASE_URL: %s", sanitize_database_url(database_url))
+
+try:
+    engine = create_engine(database_url, pool_pre_ping=True)
+except Exception:
+    logger.exception(
+        "No se pudo crear el engine de SQLAlchemy. Revisa el formato de "
+        "DATABASE_URL, credenciales y que Railway haya resuelto la reference "
+        "variable del servicio Postgres."
+    )
+    raise
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 GAME_COMPATIBILITY_COLUMNS: dict[str, str] = {

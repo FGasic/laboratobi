@@ -1,6 +1,47 @@
 # LaboraTobi
 
-MVP local para entrenamiento de ajedrez con `FastAPI + SQLAlchemy`, `Next.js` y `PostgreSQL`.
+LaboraTobi es un MVP funcional para entrenamiento de ajedrez con partidas reales de Lichess Broadcast y momentos criticos generados por backend. El stack actual es `FastAPI + SQLAlchemy`, `Next.js` y `PostgreSQL`.
+
+El proyecto ya tiene flujo productivo en Railway:
+
+- Backend desplegado en Railway: `https://laboratobi-production.up.railway.app`
+- Frontend desplegado en Railway como servicio separado.
+- PostgreSQL productivo provisto por Railway.
+- Swagger queda disponible como herramienta de debug, no como flujo operativo principal.
+
+La operacion normal de contenido es semanal: se pega una URL completa de una ronda Lichess Broadcast y se ejecuta un unico script.
+
+## Weekly Content Update
+
+La actualizacion operativa de contenido es semanal, no diaria. El flujo normal no usa Swagger.
+
+Comando canonico:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\weekly-update-round.ps1 -RoundUrl "<round_url>" -Limit 20
+```
+
+Ejemplo real:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\weekly-update-round.ps1 -RoundUrl "https://lichess.org/broadcast/german-bundesliga-202526/round-10/rbWGGERo/tEFEBiBg" -Limit 20
+```
+
+Por defecto usa:
+
+- Backend: `https://laboratobi-production.up.railway.app`
+- Limite semanal: `20`
+
+El limite se puede cambiar en cada corrida con `-Limit`, o editando `scripts/weekly-update-config.json`:
+
+```json
+{
+  "backend_url": "https://laboratobi-production.up.railway.app",
+  "weekly_limit": 20
+}
+```
+
+El script hace preview, resuelve el `round_id` desde la URL, importa hasta `Limit` partidas, genera critical moments cuando falten, consulta `/games/broadcast/recent` y `/games/broadcast/session`, e imprime un resumen con torneo, ronda, `round_id`, partidas encontradas/importadas y partidas visibles en `/study`.
 
 ## Desarrollo Local Canonico
 
@@ -54,27 +95,3 @@ No se soporta correr `next dev` en puertos alternativos ni levantar instancias p
 - Los scripts canonicos no borran datos de PostgreSQL ni tocan el pipeline de importacion o analisis.
 - `dev-reset.ps1` limpia la cache `.next` del frontend para evitar residuos entre corridas de desarrollo.
 - Si necesitas resetear tambien la base, hazlo explicitamente con `docker compose down -v`, fuera del flujo canonico.
-
-## Carga Diaria De 3 Partidas Broadcast
-
-Flujo canonico operativo:
-
-1. Levanta el stack:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\dev-up.ps1
-```
-
-2. Haz preview de una ronda seria de Lichess Broadcast:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\load-daily-broadcast.ps1 -RoundId <round_id>
-```
-
-3. Elige exactamente 3 `external_id` del preview e importalos con generacion automatica de momentos criticos:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\load-daily-broadcast.ps1 -RoundId <round_id> -ExternalIds id1,id2,id3
-```
-
-El script reutiliza los endpoints existentes de preview, import Broadcast y generacion de critical moments. Al final imprime las partidas cargadas, sus `game_id`, cuantos momentos criticos quedaron activos y confirma que esas 3 partidas estan en la sesion de `/study`.

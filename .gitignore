@@ -12,3 +12,6 @@ logs/
 *.log
 *.err.log
 backend/app/tools/stockfish.exe
+/tatus
+/frontend/study-*.png
+/frontend/*-check.png

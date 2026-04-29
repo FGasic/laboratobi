@@ -99,7 +99,9 @@ export function GameInspector({
   const criticalMomentLabel =
     currentCriticalMomentVisualIndex === null
       ? null
-      : `Critical Moment ${currentCriticalMomentVisualIndex}`;
+      : activeCriticalMoments.length <= 1
+        ? "CRITICAL MOMENT"
+        : `CRITICAL MOMENT ${currentCriticalMomentVisualIndex}`;
   const isCriticalMoment = currentCriticalMoment !== undefined;
   const isCriticalSolutionRevealed =
     currentCriticalMomentId !== undefined &&

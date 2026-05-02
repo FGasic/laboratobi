@@ -39,6 +39,12 @@ export type CriticalMoment = {
   engine_best_move?: string | null;
   engine_principal_variation?: string[];
   fen_before?: string | null;
+  engine_line_eval_cp?: number | null;
+  engine_line_mate?: number | null;
+  played_move_eval_cp?: number | null;
+  played_move_mate?: number | null;
+  engine_name?: string | null;
+  analysis_depth?: number | null;
 };
 
 export type StudyModeConfig = {
@@ -54,6 +60,7 @@ type GameInspectorProps = {
 };
 
 const AUTO_PLAY_DELAY_MS = 400;
+const DEFAULT_CRITICAL_MOMENT_REVIEW_DEPTH = 25;
 
 export function GameInspector({
   apiBaseUrl,
@@ -380,31 +387,7 @@ export function GameInspector({
                   <>
                     <div className="study-solution-block">
                       <p className="panel-label">Solution</p>
-                      <div className="study-solution-copy">
-                        <p>
-                          <strong>Solution:</strong>{" "}
-                          {formatMaybePlyMove(
-                            currentCriticalMoment.played_move_ply_index,
-                            currentCriticalMoment.engine_best_move,
-                            "No engine recommendation available.",
-                          )}
-                        </p>
-                        <p>
-                          <strong>Engine line:</strong>{" "}
-                          {formatPrincipalVariation(
-                            currentCriticalMoment.played_move_ply_index,
-                            currentCriticalMoment.engine_principal_variation ?? [],
-                          )}
-                        </p>
-                        <p>
-                          <strong>Played in game:</strong>{" "}
-                          {formatMaybePlyMove(
-                            currentCriticalMoment.played_move_ply_index,
-                            currentCriticalMoment.played_move_san,
-                            "Not available.",
-                          )}
-                        </p>
-                      </div>
+                      <CriticalMomentSolution moment={currentCriticalMoment} />
                     </div>
 
                     <button
@@ -646,11 +629,7 @@ export function GameInspector({
             {isCriticalSolutionRevealed ? (
               <div className="critical-solution-block">
                 <p className="panel-label">Solution</p>
-                <MoveLineList
-                  emptyText="There are no more moves in the game."
-                  moves={position.next_moves}
-                  startPlyIndex={position.ply_index + 1}
-                />
+                <CriticalMomentSolution moment={currentCriticalMoment} />
               </div>
             ) : (
               <button
@@ -686,6 +665,41 @@ export function GameInspector({
         )}
       </aside>
     </section>
+  );
+}
+
+function CriticalMomentSolution({ moment }: { moment: CriticalMoment }) {
+  const engineLineSummary = formatAnalysisSummary({
+    evalCp: moment.engine_line_eval_cp,
+    mate: moment.engine_line_mate,
+    engineName: moment.engine_name,
+    depth: moment.analysis_depth,
+  });
+  const playedMoveSummary = formatAnalysisSummary({
+    evalCp: moment.played_move_eval_cp,
+    mate: moment.played_move_mate,
+    engineName: moment.engine_name,
+    depth: moment.analysis_depth,
+  });
+
+  return (
+    <div className="study-solution-copy">
+      <p>
+        <strong>Engine line {engineLineSummary}:</strong>{" "}
+        {formatPrincipalVariation(
+          moment.played_move_ply_index,
+          moment.engine_principal_variation ?? [],
+        )}
+      </p>
+      <p>
+        <strong>Played move {playedMoveSummary}:</strong>{" "}
+        {formatMaybePlyMove(
+          moment.played_move_ply_index,
+          moment.played_move_san,
+          "Not available.",
+        )}
+      </p>
+    </div>
   );
 }
 
@@ -758,6 +772,44 @@ function formatPrincipalVariation(
   return moves
     .map((move, index) => formatPlyMove(startPlyIndex + index, move))
     .join(" ");
+}
+
+function formatAnalysisSummary({
+  evalCp,
+  mate,
+  engineName,
+  depth,
+}: {
+  evalCp: number | null | undefined;
+  mate: number | null | undefined;
+  engineName: string | null | undefined;
+  depth: number | null | undefined;
+}): string {
+  const normalizedEngineName = engineName?.trim() || "Stockfish";
+  const depthUsed =
+    typeof depth === "number" && Number.isFinite(depth)
+      ? depth
+      : DEFAULT_CRITICAL_MOMENT_REVIEW_DEPTH;
+
+  return `{${formatEvaluation(evalCp, mate)} ${normalizedEngineName} depth:${depthUsed}}`;
+}
+
+function formatEvaluation(
+  evalCp: number | null | undefined,
+  mate: number | null | undefined,
+): string {
+  if (typeof mate === "number" && Number.isFinite(mate)) {
+    return mate > 0 ? `M+${mate}` : `M${mate}`;
+  }
+
+  if (typeof evalCp !== "number" || !Number.isFinite(evalCp)) {
+    return "n/a";
+  }
+
+  const pawns = evalCp / 100;
+  const normalizedPawns = Math.abs(pawns) < 0.05 ? 0 : pawns;
+  const sign = normalizedPawns > 0 ? "+" : "";
+  return `${sign}${normalizedPawns.toFixed(1)}`;
 }
 
 function getFinalResultLabel(result: string): string | null {

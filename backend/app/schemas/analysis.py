@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -90,6 +90,42 @@ class ReviewGameCandidatesResponse(BaseModel):
     evaluation_perspective: Literal["white"] = "white"
     candidate_count: int
     candidates: list[ReviewedGameCandidateResponse]
+
+
+class ReviewCriticalMomentsRequest(BaseModel):
+    game_id: int = Field(..., ge=1)
+    ply_indexes: list[Annotated[int, Field(ge=1)]] | None = Field(
+        default=None,
+        min_length=1,
+    )
+    depth: int | None = Field(default=25, ge=1, le=30)
+
+
+class ReviewedCriticalMomentResponse(BaseModel):
+    ply_index: int
+    fullmove_number: int
+    played_move_san: str
+    side_that_played: Literal["w", "b"]
+    fen_before: str
+    fen_after: str
+    engine_best_move: str | None
+    engine_principal_variation: list[str]
+    engine_line_eval_cp: int | None
+    engine_line_mate: int | None
+    played_move_eval_cp: int | None
+    played_move_mate: int | None
+    engine_name: str
+    depth_used: int
+    evaluation_perspective: Literal["white"] = "white"
+
+
+class ReviewCriticalMomentsResponse(BaseModel):
+    game_id: int
+    depth_used: int
+    engine_name: str
+    evaluation_perspective: Literal["white"] = "white"
+    moment_count: int
+    moments: list[ReviewedCriticalMomentResponse]
 
 
 class GenerateCriticalMomentsRequest(BaseModel):

@@ -19,8 +19,11 @@ from app.schemas.analysis import (
     GamePositionEvaluationRequest,
     GamePositionEvaluationResponse,
     GeneratedCriticalMomentResponse,
+    ReviewCriticalMomentsRequest,
+    ReviewCriticalMomentsResponse,
     ReviewGameCandidatesRequest,
     ReviewGameCandidatesResponse,
+    ReviewedCriticalMomentResponse,
     ReviewedGameCandidateResponse,
     SanitizeBroadcastSessionRequest,
     SanitizeBroadcastSessionResponse,
@@ -68,6 +71,7 @@ from app.services.stockfish import (
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 SessionDep = Annotated[Session, Depends(get_db)]
+CRITICAL_MOMENT_REVIEW_DEPTH = 25
 
 
 @router.post("/evaluate-fen", response_model=FenEvaluationResponse)
@@ -184,6 +188,176 @@ def review_game_candidates_endpoint(
         candidate_count=len(review_candidates),
         candidates=review_candidates,
     )
+
+
+@router.post(
+    "/review-critical-moments",
+    response_model=ReviewCriticalMomentsResponse,
+)
+def review_critical_moments_endpoint(
+    payload: ReviewCriticalMomentsRequest,
+    db: SessionDep,
+) -> ReviewCriticalMomentsResponse:
+    game = db.get(Game, payload.game_id)
+    if game is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Game not found.",
+        )
+
+    ply_indexes = payload.ply_indexes
+    if ply_indexes is None:
+        ply_indexes = [
+            moment.ply_index for moment in get_active_critical_moments(db, game.id)
+        ]
+
+    parsed_game = parse_pgn_text(game.pgn_text)
+    positions = build_game_positions(parsed_game)
+    depth_used = payload.depth or CRITICAL_MOMENT_REVIEW_DEPTH
+    reviewed_moments = build_reviewed_critical_moments(
+        game_id=game.id,
+        positions=positions,
+        ply_indexes=ply_indexes,
+        depth=depth_used,
+    )
+    engine_name = (
+        reviewed_moments[0].engine_name if reviewed_moments else "Stockfish"
+    )
+    response_depth_used = (
+        reviewed_moments[0].depth_used if reviewed_moments else depth_used
+    )
+
+    return ReviewCriticalMomentsResponse(
+        game_id=game.id,
+        depth_used=response_depth_used,
+        engine_name=engine_name,
+        moment_count=len(reviewed_moments),
+        moments=reviewed_moments,
+    )
+
+
+def build_reviewed_critical_moments(
+    *,
+    game_id: int,
+    positions: list[Any],
+    ply_indexes: list[int],
+    depth: int,
+) -> list[ReviewedCriticalMomentResponse]:
+    review_targets = []
+    for ply_index in dedupe_ply_indexes(ply_indexes):
+        position_index = ply_index - 1
+        previous_index = position_index - 1
+        if previous_index < 0 or position_index >= len(positions):
+            log_critical_moment_review_runtime_failed(
+                game_id=game_id,
+                ply_index=ply_index,
+                error="critical_moment_review_ply_out_of_range",
+            )
+            continue
+
+        review_targets.append(
+            (
+                ply_index,
+                positions[previous_index],
+                positions[position_index],
+            )
+        )
+
+    if not review_targets:
+        return []
+
+    review_fens: list[str] = []
+    for _, position_before, position_after in review_targets:
+        review_fens.append(position_before.fen)
+        review_fens.append(position_after.fen)
+
+    evaluations = evaluate_fens_or_raise_http(review_fens, depth)
+    reviewed_moments: list[ReviewedCriticalMomentResponse] = []
+    for target_index, (
+        ply_index,
+        position_before,
+        position_after,
+    ) in enumerate(review_targets):
+        evaluation_before = evaluations[target_index * 2]
+        evaluation_after = evaluations[target_index * 2 + 1]
+        initial_eval_cp = get_optional_int(evaluation_before, "evaluation_white_cp")
+        if not is_initial_eval_in_critical_range(initial_eval_cp):
+            continue
+
+        review_payload = build_critical_moment_review_payload_from_position_pair(
+            ply_index=ply_index,
+            position_before=position_before,
+            position_after=position_after,
+            evaluation_before=evaluation_before,
+            evaluation_after=evaluation_after,
+        )
+        if review_payload is None:
+            log_critical_moment_review_runtime_failed(
+                game_id=game_id,
+                ply_index=ply_index,
+                error="critical_moment_review_payload_missing",
+            )
+            continue
+
+        reviewed_moments.append(
+            ReviewedCriticalMomentResponse(
+                ply_index=ply_index,
+                fullmove_number=review_payload["fullmove_number"],
+                played_move_san=review_payload["played_move_san"],
+                side_that_played=review_payload["side_that_played"],
+                fen_before=review_payload["fen_before"],
+                fen_after=review_payload["fen_after"],
+                engine_best_move=review_payload["engine_best_move"],
+                engine_principal_variation=review_payload[
+                    "engine_principal_variation"
+                ],
+                engine_line_eval_cp=initial_eval_cp,
+                engine_line_mate=get_optional_int(evaluation_before, "mate_white"),
+                played_move_eval_cp=get_optional_int(
+                    evaluation_after,
+                    "evaluation_white_cp",
+                ),
+                played_move_mate=get_optional_int(evaluation_after, "mate_white"),
+                engine_name=get_engine_name_from_evaluation(evaluation_before),
+                depth_used=get_depth_used_from_evaluation(evaluation_before, depth),
+            )
+        )
+
+    return reviewed_moments
+
+
+def dedupe_ply_indexes(ply_indexes: list[int]) -> list[int]:
+    seen: set[int] = set()
+    deduped: list[int] = []
+    for ply_index in ply_indexes:
+        if ply_index in seen:
+            continue
+
+        seen.add(ply_index)
+        deduped.append(ply_index)
+
+    return deduped
+
+
+def get_optional_int(evaluation: dict[str, Any], key: str) -> int | None:
+    value = evaluation.get(key)
+    return value if isinstance(value, int) else None
+
+
+def get_depth_used_from_evaluation(
+    evaluation: dict[str, Any],
+    fallback_depth: int,
+) -> int:
+    depth_used = evaluation.get("depth_used")
+    return depth_used if isinstance(depth_used, int) else fallback_depth
+
+
+def get_engine_name_from_evaluation(evaluation: dict[str, Any]) -> str:
+    engine_name = evaluation.get("engine_name")
+    if isinstance(engine_name, str) and engine_name.strip():
+        return engine_name.strip()
+
+    return "Stockfish"
 
 
 @router.post(

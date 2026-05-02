@@ -5,6 +5,12 @@ import type {
 } from "../games/[id]/GameInspector";
 import { headers } from "next/headers";
 
+import {
+  buildReviewedCriticalMoment,
+  criticalMomentReviewDepth,
+  type CriticalMomentReview,
+  type CriticalMomentReviewResponse,
+} from "../criticalMomentReview";
 import { StudySession, type StudySessionGame } from "./StudySession";
 
 type BroadcastSessionGame = {
@@ -20,18 +26,6 @@ type BroadcastSessionGame = {
 
 type BroadcastSessionResponse = {
   games: BroadcastSessionGame[];
-};
-
-type ReviewedCandidate = {
-  ply_index: number;
-  played_move_san: string;
-  engine_best_move: string | null;
-  engine_principal_variation: string[];
-  fen_before: string;
-};
-
-type ReviewCandidatesResponse = {
-  candidates: ReviewedCandidate[];
 };
 
 const browserApiBaseUrl = "/api/backend";
@@ -103,9 +97,12 @@ async function loadStudyGames(): Promise<StudySessionGame[]> {
 
   const preparedGames = await Promise.all(
     playableGames.map(async (game) => {
-      const [positions, reviewedCandidates] = await Promise.all([
+      const criticalMomentPlyIndexes = game.critical_moments.map((moment) =>
+        Number(moment.ply_index),
+      );
+      const [positions, criticalMomentReviews] = await Promise.all([
         fetchGamePositions(game.id),
-        fetchReviewedCandidates(game.id),
+        fetchCriticalMomentReviews(game.id, criticalMomentPlyIndexes),
       ]);
       if (positions.length === 0) {
         console.warn("[study] game rejected", {
@@ -116,12 +113,12 @@ async function loadStudyGames(): Promise<StudySessionGame[]> {
       }
 
       const reviewByPlayedMovePly = new Map(
-        reviewedCandidates.map((candidate) => [candidate.ply_index, candidate]),
+        criticalMomentReviews.map((review) => [review.ply_index, review]),
       );
 
       const studyCriticalMoments = game.critical_moments
         .map((moment) =>
-          buildStudyCriticalMoment(
+          buildReviewedCriticalMoment(
             moment,
             positions,
             reviewByPlayedMovePly.get(Number(moment.ply_index)),
@@ -180,33 +177,6 @@ async function loadStudyGames(): Promise<StudySessionGame[]> {
   return games;
 }
 
-function buildStudyCriticalMoment(
-  moment: CriticalMoment,
-  positions: GamePositionSummary[],
-  reviewedCandidate: ReviewedCandidate | undefined,
-): CriticalMoment | null {
-  const playedMovePlyIndex = Number(moment.ply_index);
-  if (playedMovePlyIndex < 2) {
-    return null;
-  }
-
-  const triggerPlyIndex = playedMovePlyIndex - 1;
-  const playedMove = positions.find(
-    (position) => Number(position.ply_index) === playedMovePlyIndex,
-  );
-
-  return {
-    ...moment,
-    ply_index: triggerPlyIndex,
-    played_move_ply_index: playedMovePlyIndex,
-    played_move_san: reviewedCandidate?.played_move_san ?? playedMove?.san_move ?? null,
-    engine_best_move: reviewedCandidate?.engine_best_move ?? null,
-    engine_principal_variation:
-      reviewedCandidate?.engine_principal_variation ?? [],
-    fen_before: reviewedCandidate?.fen_before ?? null,
-  };
-}
-
 async function fetchBroadcastSession(): Promise<BroadcastSessionResponse | null> {
   const targetUrl = await buildBackendProxyUrl("/games/broadcast/session");
   console.warn("[study] fetching broadcast session", { url: targetUrl });
@@ -240,12 +210,17 @@ async function fetchBroadcastSession(): Promise<BroadcastSessionResponse | null>
   }
 }
 
-async function fetchReviewedCandidates(
+async function fetchCriticalMomentReviews(
   gameId: number,
-): Promise<ReviewedCandidate[]> {
+  plyIndexes: number[],
+): Promise<CriticalMomentReview[]> {
+  if (plyIndexes.length === 0) {
+    return [];
+  }
+
   try {
     const targetUrl = await buildBackendProxyUrl(
-      "/analysis/review-game-candidates",
+      "/analysis/review-critical-moments",
     );
     const response = await fetch(
       targetUrl,
@@ -257,23 +232,27 @@ async function fetchReviewedCandidates(
         },
         body: JSON.stringify({
           game_id: gameId,
-          swing_threshold_cp: 1,
+          ply_indexes: plyIndexes,
+          depth: criticalMomentReviewDepth,
         }),
       },
     );
 
     if (!response.ok) {
-      console.warn("[study] reviewed candidates fetch failed", {
+      console.warn("[study] critical moment reviews fetch failed", {
         gameId,
         status: response.status,
       });
       return [];
     }
 
-    const payload = (await response.json()) as ReviewCandidatesResponse;
-    return payload.candidates;
+    const payload = (await response.json()) as CriticalMomentReviewResponse;
+    return payload.moments;
   } catch (error) {
-    console.error("[study] reviewed candidates fetch threw", { gameId, error });
+    console.error("[study] critical moment reviews fetch threw", {
+      gameId,
+      error,
+    });
     return [];
   }
 }

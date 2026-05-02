@@ -37,6 +37,7 @@ from app.services.critical_moment_metadata import (
 from app.services.critical_moment_validation import (
     BASELINE_DEPTH,
     OBJECTIVE_GAP_THRESHOLD_CP,
+    is_initial_eval_in_critical_range,
     log_critical_moment_review_runtime_failed,
     log_critical_moment_validation,
     validate_critical_moment_review,
@@ -47,6 +48,7 @@ from app.services.stockfish import evaluate_fens
 router = APIRouter(prefix="/games", tags=["games"])
 SessionDep = Annotated[Session, Depends(get_db)]
 BROADCAST_STUDY_SESSION_LIMIT = 3
+BROADCAST_STUDY_REVIEW_DEPTH = 25
 
 
 @router.post("/import-local-pgns", response_model=GameImportResponse)
@@ -201,7 +203,6 @@ def get_broadcast_study_session(db: SessionDep) -> BroadcastSessionResponse:
             CriticalMoment.ply_index.asc(),
             Game.id.desc(),
         )
-        .limit(BROADCAST_STUDY_SESSION_LIMIT)
     )
 
     if current_round_id is not None:
@@ -215,6 +216,9 @@ def get_broadcast_study_session(db: SessionDep) -> BroadcastSessionResponse:
             active_moments=[moment],
         )
         if not valid_critical_moments:
+            continue
+
+        if not has_valid_depth25_study_review(game=game, moment=moment):
             continue
 
         games.append(
@@ -238,6 +242,21 @@ def get_broadcast_study_session(db: SessionDep) -> BroadcastSessionResponse:
                 tournament_id=game.tournament_id,
                 critical_moments=valid_critical_moments,
             )
+        )
+        if len(games) == BROADCAST_STUDY_SESSION_LIMIT:
+            break
+
+    if len(games) != BROADCAST_STUDY_SESSION_LIMIT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": (
+                    "Broadcast study session needs exactly 3 valid ranked games."
+                ),
+                "round_id": current_round_id,
+                "required_games": BROADCAST_STUDY_SESSION_LIMIT,
+                "selected_games": len(games),
+            },
         )
 
     return BroadcastSessionResponse(games=games)
@@ -273,6 +292,65 @@ def filter_valid_study_critical_moments(
             valid_moments.append(moment)
 
     return valid_moments
+
+
+def has_valid_depth25_study_review(
+    *,
+    game: Game,
+    moment: CriticalMoment,
+) -> bool:
+    try:
+        parsed_game = parse_pgn_text(game.pgn_text)
+        positions = build_game_positions(parsed_game)
+    except HTTPException:
+        return False
+
+    position_index = moment.ply_index - 1
+    previous_index = position_index - 1
+    if previous_index < 0 or position_index >= len(positions):
+        return False
+
+    evaluations = evaluate_fens(
+        [
+            positions[previous_index].fen,
+            positions[position_index].fen,
+        ],
+        BROADCAST_STUDY_REVIEW_DEPTH,
+    )
+    evaluation_before = evaluations[0]
+    evaluation_after = evaluations[1]
+    initial_eval_cp = get_optional_int(evaluation_before, "evaluation_white_cp")
+    if not is_initial_eval_in_critical_range(initial_eval_cp):
+        return False
+
+    review_payload = build_critical_moment_review_payload_from_position_pair(
+        ply_index=moment.ply_index,
+        position_before=positions[previous_index],
+        position_after=positions[position_index],
+        evaluation_before=evaluation_before,
+        evaluation_after=evaluation_after,
+    )
+    if review_payload is None:
+        return False
+
+    engine_name = evaluation_before.get("engine_name")
+    depth_used = get_optional_int(evaluation_before, "depth_used")
+    played_move_eval_cp = get_optional_int(evaluation_after, "evaluation_white_cp")
+    played_move_mate = get_optional_int(evaluation_after, "mate_white")
+    return (
+        isinstance(engine_name, str)
+        and bool(engine_name.strip())
+        and depth_used is not None
+        and depth_used >= BROADCAST_STUDY_REVIEW_DEPTH
+        and bool(review_payload.get("engine_best_move"))
+        and bool(review_payload.get("engine_principal_variation"))
+        and (played_move_eval_cp is not None or played_move_mate is not None)
+    )
+
+
+def get_optional_int(payload: dict[str, object], key: str) -> int | None:
+    value = payload.get(key)
+    return value if isinstance(value, int) else None
 
 
 @router.get("/{game_id}", response_model=GameResponse)

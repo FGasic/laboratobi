@@ -40,7 +40,7 @@ class BroadcastPreviewRequest(BaseModel):
         max_length=500,
         examples=[EXAMPLE_ROUND_URL],
     )
-    limit: int = Field(default=10, ge=1, le=50)
+    limit: int = Field(default=10, ge=1, le=100)
     include_pgn_text: bool = False
 
     @model_validator(mode="after")
@@ -138,7 +138,7 @@ class BroadcastImportRequest(BaseModel):
         examples=[EXAMPLE_ROUND_URL],
     )
     external_ids: list[str] | None = Field(default=None, min_length=1)
-    limit: int = Field(default=10, ge=1, le=50)
+    limit: int = Field(default=10, ge=1, le=100)
     include_pgn_text: bool = False
     allow_low_quality: bool = False
     generate_critical_moments: bool = False

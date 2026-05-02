@@ -3,12 +3,6 @@ import {
   GameInspector,
   type GamePositionDetail,
 } from "./GameInspector";
-import {
-  buildReviewedCriticalMoment,
-  criticalMomentReviewDepth,
-  type CriticalMomentReview,
-  type CriticalMomentReviewResponse,
-} from "../../criticalMomentReview";
 
 type Game = {
   id: number;
@@ -78,7 +72,7 @@ export default async function GamePage({ params }: PageProps) {
   }
 
   const initialPlyIndex = Math.min(49, positions.length);
-  const [initialPosition, storedCriticalMoments] = await Promise.all([
+  const [initialPosition, criticalMoments] = await Promise.all([
     fetchGamePosition(gameId, initialPlyIndex),
     fetchCriticalMoments(gameId),
   ]);
@@ -90,23 +84,6 @@ export default async function GamePage({ params }: PageProps) {
       />
     );
   }
-
-  const reviewedMoments = await fetchCriticalMomentReviews(
-    gameId,
-    storedCriticalMoments.map((moment) => Number(moment.ply_index)),
-  );
-  const reviewByPlayedMovePly = new Map(
-    reviewedMoments.map((review) => [review.ply_index, review]),
-  );
-  const criticalMoments = storedCriticalMoments
-    .map((moment) =>
-      buildReviewedCriticalMoment(
-        moment,
-        positions,
-        reviewByPlayedMovePly.get(Number(moment.ply_index)),
-      ),
-    )
-    .filter((moment): moment is CriticalMoment => moment !== null);
 
   return (
     <main className="game-shell">
@@ -193,42 +170,6 @@ async function fetchCriticalMoments(gameId: number): Promise<CriticalMoment[]> {
     }
 
     return (await response.json()) as CriticalMoment[];
-  } catch {
-    return [];
-  }
-}
-
-async function fetchCriticalMomentReviews(
-  gameId: number,
-  plyIndexes: number[],
-): Promise<CriticalMomentReview[]> {
-  if (plyIndexes.length === 0) {
-    return [];
-  }
-
-  try {
-    const response = await fetch(
-      `${internalApiBaseUrl}/analysis/review-critical-moments`,
-      {
-        method: "POST",
-        cache: "no-store",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          game_id: gameId,
-          ply_indexes: plyIndexes,
-          depth: criticalMomentReviewDepth,
-        }),
-      },
-    );
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const payload = (await response.json()) as CriticalMomentReviewResponse;
-    return payload.moments;
   } catch {
     return [];
   }

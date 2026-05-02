@@ -5,12 +5,6 @@ import type {
 } from "../games/[id]/GameInspector";
 import { headers } from "next/headers";
 
-import {
-  buildReviewedCriticalMoment,
-  criticalMomentReviewDepth,
-  type CriticalMomentReview,
-  type CriticalMomentReviewResponse,
-} from "../criticalMomentReview";
 import { StudySession, type StudySessionGame } from "./StudySession";
 
 type BroadcastSessionGame = {
@@ -26,6 +20,18 @@ type BroadcastSessionGame = {
 
 type BroadcastSessionResponse = {
   games: BroadcastSessionGame[];
+};
+
+type ReviewedCandidate = {
+  ply_index: number;
+  played_move_san: string;
+  engine_best_move: string | null;
+  engine_principal_variation: string[];
+  fen_before: string;
+};
+
+type ReviewCandidatesResponse = {
+  candidates: ReviewedCandidate[];
 };
 
 const browserApiBaseUrl = "/api/backend";
@@ -57,40 +63,65 @@ export default async function StudyPage() {
 async function loadStudyGames(): Promise<StudySessionGame[]> {
   const session = await fetchBroadcastSession();
   if (!session) {
+    console.warn("[study] empty session reason", {
+      reason: "broadcast_session_fetch_failed",
+    });
     return [];
   }
 
   if (session.games.length === 0) {
+    console.warn("[study] empty session reason", {
+      reason: "broadcast_session_has_no_games",
+    });
     return [];
   }
 
-  const playableGames = session.games.filter(
-    (game) => game.critical_moments.length > 0,
-  );
+  for (const game of session.games) {
+    console.warn("[study] session game", {
+      gameId: game.id,
+      criticalMomentsCount: game.critical_moments.length,
+    });
+  }
+
+  const playableGames = session.games.filter((game) => {
+    const hasMoments = game.critical_moments.length > 0;
+    if (!hasMoments) {
+      console.warn("[study] game rejected", {
+        gameId: game.id,
+        reason: "no_critical_moments",
+      });
+    }
+    return hasMoments;
+  });
   if (playableGames.length === 0) {
+    console.warn("[study] empty session reason", {
+      reason: "no_games_with_critical_moments",
+      gamesCount: session.games.length,
+    });
     return [];
   }
 
   const preparedGames = await Promise.all(
     playableGames.map(async (game) => {
-      const [positions, reviewedMoments] = await Promise.all([
+      const [positions, reviewedCandidates] = await Promise.all([
         fetchGamePositions(game.id),
-        fetchCriticalMomentReviews(
-          game.id,
-          game.critical_moments.map((moment) => Number(moment.ply_index)),
-        ),
+        fetchReviewedCandidates(game.id),
       ]);
       if (positions.length === 0) {
+        console.warn("[study] game rejected", {
+          gameId: game.id,
+          reason: "positions_fetch_returned_empty",
+        });
         return null;
       }
 
       const reviewByPlayedMovePly = new Map(
-        reviewedMoments.map((review) => [review.ply_index, review]),
+        reviewedCandidates.map((candidate) => [candidate.ply_index, candidate]),
       );
 
       const studyCriticalMoments = game.critical_moments
         .map((moment) =>
-          buildReviewedCriticalMoment(
+          buildStudyCriticalMoment(
             moment,
             positions,
             reviewByPlayedMovePly.get(Number(moment.ply_index)),
@@ -99,6 +130,11 @@ async function loadStudyGames(): Promise<StudySessionGame[]> {
         .filter((moment): moment is CriticalMoment => moment !== null);
 
       if (studyCriticalMoments.length === 0) {
+        console.warn("[study] game rejected", {
+          gameId: game.id,
+          reason: "all_critical_moments_failed_frontend_normalization",
+          backendCriticalMomentsCount: game.critical_moments.length,
+        });
         return null;
       }
 
@@ -108,6 +144,11 @@ async function loadStudyGames(): Promise<StudySessionGame[]> {
         Number(firstStudyMoment.ply_index),
       );
       if (!initialPosition) {
+        console.warn("[study] game rejected", {
+          gameId: game.id,
+          reason: "initial_position_fetch_failed",
+          requestedPlyIndex: firstStudyMoment.ply_index,
+        });
         return null;
       }
 
@@ -129,26 +170,67 @@ async function loadStudyGames(): Promise<StudySessionGame[]> {
   const games = preparedGames.filter(
     (game): game is StudySessionGame => game !== null,
   );
+  if (games.length === 0) {
+    console.warn("[study] empty session reason", {
+      reason: "all_games_rejected_after_preparation",
+      playableGamesCount: playableGames.length,
+    });
+  }
+
   return games;
+}
+
+function buildStudyCriticalMoment(
+  moment: CriticalMoment,
+  positions: GamePositionSummary[],
+  reviewedCandidate: ReviewedCandidate | undefined,
+): CriticalMoment | null {
+  const playedMovePlyIndex = Number(moment.ply_index);
+  if (playedMovePlyIndex < 2) {
+    return null;
+  }
+
+  const triggerPlyIndex = playedMovePlyIndex - 1;
+  const playedMove = positions.find(
+    (position) => Number(position.ply_index) === playedMovePlyIndex,
+  );
+
+  return {
+    ...moment,
+    ply_index: triggerPlyIndex,
+    played_move_ply_index: playedMovePlyIndex,
+    played_move_san: reviewedCandidate?.played_move_san ?? playedMove?.san_move ?? null,
+    engine_best_move: reviewedCandidate?.engine_best_move ?? null,
+    engine_principal_variation:
+      reviewedCandidate?.engine_principal_variation ?? [],
+    fen_before: reviewedCandidate?.fen_before ?? null,
+  };
 }
 
 async function fetchBroadcastSession(): Promise<BroadcastSessionResponse | null> {
   const targetUrl = await buildBackendProxyUrl("/games/broadcast/session");
+  console.warn("[study] fetching broadcast session", { url: targetUrl });
 
   try {
     const response = await fetch(targetUrl, {
       cache: "no-store",
     });
+    console.warn("[study] broadcast session response", {
+      url: targetUrl,
+      status: response.status,
+    });
 
     if (!response.ok) {
-      console.error("[study] broadcast session fetch failed", {
-        url: targetUrl,
-        status: response.status,
-      });
       return null;
     }
 
-    return normalizeBroadcastSession(await response.json());
+    const payload = normalizeBroadcastSession(await response.json());
+    console.warn("[study] broadcast session games received", {
+      url: targetUrl,
+      gamesCount: payload.games.length,
+    });
+
+    return payload;
   } catch (error) {
     console.error("[study] broadcast session fetch failed", {
       url: targetUrl,
@@ -158,17 +240,12 @@ async function fetchBroadcastSession(): Promise<BroadcastSessionResponse | null>
   }
 }
 
-async function fetchCriticalMomentReviews(
+async function fetchReviewedCandidates(
   gameId: number,
-  plyIndexes: number[],
-): Promise<CriticalMomentReview[]> {
-  if (plyIndexes.length === 0) {
-    return [];
-  }
-
+): Promise<ReviewedCandidate[]> {
   try {
     const targetUrl = await buildBackendProxyUrl(
-      "/analysis/review-critical-moments",
+      "/analysis/review-game-candidates",
     );
     const response = await fetch(
       targetUrl,
@@ -180,27 +257,23 @@ async function fetchCriticalMomentReviews(
         },
         body: JSON.stringify({
           game_id: gameId,
-          ply_indexes: plyIndexes,
-          depth: criticalMomentReviewDepth,
+          swing_threshold_cp: 1,
         }),
       },
     );
 
     if (!response.ok) {
-      console.warn("[study] critical moment reviews fetch failed", {
+      console.warn("[study] reviewed candidates fetch failed", {
         gameId,
         status: response.status,
       });
       return [];
     }
 
-    const payload = (await response.json()) as CriticalMomentReviewResponse;
-    return payload.moments;
+    const payload = (await response.json()) as ReviewCandidatesResponse;
+    return payload.candidates;
   } catch (error) {
-    console.error("[study] critical moment reviews fetch threw", {
-      gameId,
-      error,
-    });
+    console.error("[study] reviewed candidates fetch threw", { gameId, error });
     return [];
   }
 }

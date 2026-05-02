@@ -28,24 +28,14 @@ type StudySessionProps = {
 };
 
 export function StudySession({ apiBaseUrl, games }: StudySessionProps) {
-  const [currentGameIndex, setCurrentGameIndex] = useState(0);
-  const [isSessionComplete, setIsSessionComplete] = useState(false);
+  const [currentGameIndex, setCurrentGameIndex] = useState(
+    () => findNextStudyGameIndex(games, -1) ?? 0,
+  );
+  const [gameVisitKey, setGameVisitKey] = useState(0);
 
   const currentGame = games[currentGameIndex] ?? null;
-  const hasNextGame = currentGameIndex < games.length - 1;
 
-  if (isSessionComplete) {
-    return (
-      <main className="game-shell study-shell">
-        <section className="panel empty-state study-finish-panel">
-          <h2>Session complete</h2>
-          <p>You already reviewed every critical moment in this session.</p>
-        </section>
-      </main>
-    );
-  }
-
-  if (!currentGame) {
+  if (!currentGame || !hasStudyCriticalMoments(currentGame)) {
     return (
       <main className="game-shell study-shell">
         <section className="panel empty-state study-finish-panel">
@@ -59,25 +49,49 @@ export function StudySession({ apiBaseUrl, games }: StudySessionProps) {
   return (
     <main className="game-shell study-shell">
       <GameInspector
-        key={currentGame.id}
+        key={`${currentGame.id}-${gameVisitKey}`}
         apiBaseUrl={apiBaseUrl}
         initialPosition={currentGame.initial_position}
         positions={currentGame.positions}
         criticalMoments={currentGame.critical_moments}
         studyMode={{
-          hasNextGame,
           onNextGame: () => {
-            if (!hasNextGame) {
-              return;
-            }
-
-            setCurrentGameIndex((value) => value + 1);
-          },
-          onCompleteSession: () => {
-            setIsSessionComplete(true);
+            setCurrentGameIndex((value) => {
+              const nextIndex = findNextStudyGameIndex(games, value);
+              return nextIndex ?? value;
+            });
+            setGameVisitKey((value) => value + 1);
           },
         }}
       />
     </main>
+  );
+}
+
+function findNextStudyGameIndex(
+  games: StudySessionGame[],
+  currentIndex: number,
+): number | null {
+  if (games.length === 0) {
+    return null;
+  }
+
+  for (let offset = 1; offset <= games.length; offset += 1) {
+    const nextIndex = (currentIndex + offset + games.length) % games.length;
+    if (hasStudyCriticalMoments(games[nextIndex])) {
+      return nextIndex;
+    }
+  }
+
+  return null;
+}
+
+function hasStudyCriticalMoments(
+  game: StudySessionGame | null | undefined,
+): game is StudySessionGame {
+  return (
+    game !== null &&
+    game !== undefined &&
+    game.critical_moments.some((moment) => moment.is_active !== false)
   );
 }

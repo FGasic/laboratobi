@@ -42,9 +42,7 @@ export type CriticalMoment = {
 };
 
 export type StudyModeConfig = {
-  hasNextGame: boolean;
   onNextGame: () => void;
-  onCompleteSession: () => void;
 };
 
 type GameInspectorProps = {
@@ -275,12 +273,7 @@ export function GameInspector({
       return;
     }
 
-    if (studyMode.hasNextGame) {
-      studyMode.onNextGame();
-      return;
-    }
-
-    studyMode.onCompleteSession();
+    studyMode.onNextGame();
   }, [studyMode]);
 
   useEffect(() => {
@@ -417,6 +410,14 @@ export function GameInspector({
                     <button
                       className="primary-button study-next-button"
                       type="button"
+                      onClick={studyMode.onNextGame}
+                    >
+                      Next Game
+                    </button>
+
+                    <button
+                      className="primary-button study-next-button"
+                      type="button"
                       onClick={handleStudyContinue}
                     >
                       Continue game
@@ -498,7 +499,7 @@ export function GameInspector({
                       type="button"
                       onClick={handleStudyEndOfGame}
                     >
-                      {studyMode.hasNextGame ? "Next game" : "Finish session"}
+                      Next Game
                     </button>
                   </>
                 ) : null}

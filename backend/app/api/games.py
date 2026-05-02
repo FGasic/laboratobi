@@ -36,6 +36,7 @@ from app.services.critical_moment_metadata import (
 )
 from app.services.critical_moment_validation import (
     BASELINE_DEPTH,
+    OBJECTIVE_GAP_THRESHOLD_CP,
     log_critical_moment_review_runtime_failed,
     log_critical_moment_validation,
     validate_critical_moment_review,
@@ -45,6 +46,7 @@ from app.services.stockfish import evaluate_fens
 
 router = APIRouter(prefix="/games", tags=["games"])
 SessionDep = Annotated[Session, Depends(get_db)]
+BROADCAST_STUDY_SESSION_LIMIT = 3
 
 
 @router.post("/import-local-pgns", response_model=GameImportResponse)
@@ -169,86 +171,88 @@ def get_broadcast_study_session(db: SessionDep) -> BroadcastSessionResponse:
         .correlate(Game)
         .scalar_subquery()
     )
+    current_round_id = get_current_broadcast_round_id(db)
     statement = (
         select(
-            Game.id,
-            Game.event_name,
-            Game.white_player,
-            Game.black_player,
-            Game.result,
-            Game.created_at,
-            Game.source_type,
-            Game.external_id,
-            Game.source_url,
-            Game.round_id,
-            Game.tournament_id,
-            Game.pgn_text,
-            active_moments_count.label("critical_moments_count"),
+            Game,
+            CriticalMoment,
         )
+        .join(CriticalMoment, CriticalMoment.game_id == Game.id)
         .where(Game.source_type == "broadcast")
+        .where(CriticalMoment.is_active.is_(True))
+        .where(active_moments_count == 1)
+        .where(CriticalMoment.validation_status == "valid")
+        .where(CriticalMoment.validation_invalid_reason.is_(None))
+        .where(CriticalMoment.validation_engine_best_move.is_not(None))
+        .where(CriticalMoment.validation_engine_principal_variation_count > 0)
+        .where(
+            CriticalMoment.validation_objective_gap_cp
+            >= OBJECTIVE_GAP_THRESHOLD_CP
+        )
+        .where(CriticalMoment.validation_equivalent_move_band_reject.is_(False))
+        .where(CriticalMoment.ranking_final_candidate_score.is_not(None))
+        .where(CriticalMoment.ranking_transferable_idea_score.is_not(None))
+        .where(CriticalMoment.ranking_difficulty_adequacy_score.is_not(None))
         .order_by(
-            case((active_moments_count > 0, 1), else_=0).desc(),
-            Game.created_at.desc(),
+            CriticalMoment.ranking_final_candidate_score.desc(),
+            CriticalMoment.validation_objective_gap_cp.desc(),
+            CriticalMoment.ranking_transferable_idea_score.desc(),
+            CriticalMoment.ranking_difficulty_adequacy_score.desc(),
+            CriticalMoment.ply_index.asc(),
             Game.id.desc(),
         )
-        .limit(3)
+        .limit(BROADCAST_STUDY_SESSION_LIMIT)
     )
-    rows = db.execute(statement).all()
-    game_ids = [row.id for row in rows]
-    active_moments_by_game_id: dict[int, list[CriticalMoment]] = {
-        game_id: [] for game_id in game_ids
-    }
 
-    if game_ids:
-        active_moments = db.scalars(
-            select(CriticalMoment)
-            .where(
-                CriticalMoment.game_id.in_(game_ids),
-                CriticalMoment.is_active.is_(True),
-            )
-            .order_by(
-                CriticalMoment.game_id.asc(),
-                CriticalMoment.ply_index.asc(),
-                CriticalMoment.moment_number.asc(),
-            )
-        ).all()
-        for moment in active_moments:
-            active_moments_by_game_id.setdefault(moment.game_id, []).append(moment)
+    if current_round_id is not None:
+        statement = statement.where(Game.round_id == current_round_id)
 
     games: list[BroadcastSessionGameResponse] = []
-    for row in rows:
+    for game, moment in db.execute(statement).all():
         valid_critical_moments = filter_valid_study_critical_moments(
-            game_id=row.id,
-            pgn_text=row.pgn_text,
-            active_moments=active_moments_by_game_id.get(row.id, []),
+            game_id=game.id,
+            pgn_text=game.pgn_text,
+            active_moments=[moment],
         )
         if not valid_critical_moments:
             continue
 
         games.append(
             BroadcastSessionGameResponse(
-                id=row.id,
+                id=game.id,
                 display_event_name=build_display_event_name(
-                    event_name=row.event_name,
-                    tournament_id=row.tournament_id,
-                    round_id=row.round_id,
+                    event_name=game.event_name,
+                    tournament_id=game.tournament_id,
+                    round_id=game.round_id,
                 ),
-                event_name=row.event_name,
-                white_player=row.white_player,
-                black_player=row.black_player,
-                result=row.result,
+                event_name=game.event_name,
+                white_player=game.white_player,
+                black_player=game.black_player,
+                result=game.result,
                 critical_moments_count=len(valid_critical_moments),
-                created_at=row.created_at,
-                source_type=row.source_type,
-                external_id=row.external_id,
-                source_url=row.source_url,
-                round_id=row.round_id,
-                tournament_id=row.tournament_id,
+                created_at=game.created_at,
+                source_type=game.source_type,
+                external_id=game.external_id,
+                source_url=game.source_url,
+                round_id=game.round_id,
+                tournament_id=game.tournament_id,
                 critical_moments=valid_critical_moments,
             )
         )
 
     return BroadcastSessionResponse(games=games)
+
+
+def get_current_broadcast_round_id(db: Session) -> str | None:
+    return db.scalar(
+        select(Game.round_id)
+        .where(
+            Game.source_type == "broadcast",
+            Game.round_id.is_not(None),
+        )
+        .order_by(Game.created_at.desc(), Game.id.desc())
+        .limit(1)
+    )
 
 
 def filter_valid_study_critical_moments(

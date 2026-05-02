@@ -19,8 +19,11 @@ from app.schemas.analysis import (
     GamePositionEvaluationRequest,
     GamePositionEvaluationResponse,
     GeneratedCriticalMomentResponse,
+    ReviewCriticalMomentsRequest,
+    ReviewCriticalMomentsResponse,
     ReviewGameCandidatesRequest,
     ReviewGameCandidatesResponse,
+    ReviewedCriticalMomentResponse,
     ReviewedGameCandidateResponse,
     SanitizeBroadcastSessionRequest,
     SanitizeBroadcastSessionResponse,
@@ -67,6 +70,7 @@ from app.services.stockfish import (
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 SessionDep = Annotated[Session, Depends(get_db)]
+CRITICAL_MOMENT_REVIEW_DEPTH = 25
 
 
 @router.post("/evaluate-fen", response_model=FenEvaluationResponse)
@@ -182,6 +186,61 @@ def review_game_candidates_endpoint(
         swing_threshold_cp=payload.swing_threshold_cp,
         candidate_count=len(review_candidates),
         candidates=review_candidates,
+    )
+
+
+@router.post(
+    "/review-critical-moments",
+    response_model=ReviewCriticalMomentsResponse,
+)
+def review_critical_moments_endpoint(
+    payload: ReviewCriticalMomentsRequest,
+    db: SessionDep,
+) -> ReviewCriticalMomentsResponse:
+    game = db.get(Game, payload.game_id)
+    if game is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Game not found.",
+        )
+
+    game_id = game.id
+    pgn_text = game.pgn_text
+    requested_ply_indexes = payload.ply_indexes
+    if requested_ply_indexes is None:
+        requested_ply_indexes = [
+            moment.ply_index
+            for moment in get_active_critical_moments(db, game_id)
+        ]
+    db.close()
+
+    parsed_game = parse_pgn_text(pgn_text)
+    positions = build_game_positions(parsed_game)
+    depth_used = payload.depth or CRITICAL_MOMENT_REVIEW_DEPTH
+
+    invalid_ply_indexes = [
+        ply_index for ply_index in requested_ply_indexes if ply_index < 1
+    ]
+    if invalid_ply_indexes:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="All ply_indexes must be positive integers.",
+        )
+
+    reviews = build_reviewed_critical_moments(
+        game_id=game_id,
+        positions=positions,
+        ply_indexes=requested_ply_indexes,
+        depth=depth_used,
+    )
+    engine_name = reviews[0].engine_name if reviews else "Stockfish"
+
+    return ReviewCriticalMomentsResponse(
+        game_id=game_id,
+        depth_used=depth_used,
+        engine_name=engine_name,
+        moment_count=len(reviews),
+        moments=reviews,
     )
 
 
@@ -1061,6 +1120,116 @@ def include_active_critical_moment_reviews(
         reviews_by_ply[review_candidate.ply_index] = review_candidate
 
     return sorted(reviews_by_ply.values(), key=lambda review: review.ply_index)
+
+
+def build_reviewed_critical_moments(
+    *,
+    game_id: int,
+    positions: list[Any],
+    ply_indexes: list[int],
+    depth: int,
+) -> list[ReviewedCriticalMomentResponse]:
+    requested_ply_indexes = dedupe_ply_indexes(ply_indexes)
+    position_pairs = []
+
+    for ply_index in requested_ply_indexes:
+        position_index = ply_index - 1
+        previous_index = position_index - 1
+        if previous_index < 0 or position_index >= len(positions):
+            log_critical_moment_review_runtime_failed(
+                game_id=game_id,
+                ply_index=ply_index,
+                error="critical_moment_review_out_of_range",
+            )
+            continue
+
+        position_pairs.append(
+            (
+                ply_index,
+                positions[previous_index],
+                positions[position_index],
+            )
+        )
+
+    if not position_pairs:
+        return []
+
+    fens: list[str] = []
+    for _, position_before, position_after in position_pairs:
+        fens.append(position_before.fen)
+        fens.append(position_after.fen)
+
+    evaluations = evaluate_fens_or_raise_http(fens, depth)
+    reviews: list[ReviewedCriticalMomentResponse] = []
+    for index, (ply_index, position_before, position_after) in enumerate(
+        position_pairs
+    ):
+        evaluation_before = evaluations[index * 2]
+        evaluation_after = evaluations[index * 2 + 1]
+        review_payload = build_critical_moment_review_payload_from_position_pair(
+            ply_index=ply_index,
+            position_before=position_before,
+            position_after=position_after,
+            evaluation_before=evaluation_before,
+            evaluation_after=evaluation_after,
+        )
+        if review_payload is None:
+            log_critical_moment_review_runtime_failed(
+                game_id=game_id,
+                ply_index=ply_index,
+                error="critical_moment_depth25_review_payload_missing",
+            )
+            continue
+
+        reviews.append(
+            ReviewedCriticalMomentResponse(
+                **review_payload,
+                engine_line_eval_cp=get_optional_int(
+                    evaluation_before.get("evaluation_white_cp")
+                ),
+                engine_line_mate=get_optional_int(
+                    evaluation_before.get("mate_white")
+                ),
+                played_move_eval_cp=get_optional_int(
+                    evaluation_after.get("evaluation_white_cp")
+                ),
+                played_move_mate=get_optional_int(evaluation_after.get("mate_white")),
+                engine_name=get_engine_name_from_evaluation(evaluation_before),
+                depth_used=get_depth_used_from_evaluation(evaluation_before, depth),
+            )
+        )
+
+    return reviews
+
+
+def dedupe_ply_indexes(ply_indexes: list[int]) -> list[int]:
+    seen: set[int] = set()
+    unique_ply_indexes: list[int] = []
+    for ply_index in ply_indexes:
+        if ply_index in seen:
+            continue
+
+        seen.add(ply_index)
+        unique_ply_indexes.append(ply_index)
+
+    return unique_ply_indexes
+
+
+def get_optional_int(value: Any) -> int | None:
+    return value if type(value) is int else None
+
+
+def get_depth_used_from_evaluation(evaluation: dict[str, Any], fallback: int) -> int:
+    depth = get_optional_int(evaluation.get("depth_used"))
+    return depth if depth is not None else fallback
+
+
+def get_engine_name_from_evaluation(evaluation: dict[str, Any]) -> str:
+    engine_name = evaluation.get("engine_name")
+    if isinstance(engine_name, str) and engine_name.strip():
+        return engine_name.strip()
+
+    return "Stockfish"
 
 
 def validate_critical_moment_review_for_candidate(

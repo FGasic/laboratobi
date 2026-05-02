@@ -39,6 +39,12 @@ export type CriticalMoment = {
   engine_best_move?: string | null;
   engine_principal_variation?: string[];
   fen_before?: string | null;
+  engine_line_eval_cp?: number | null;
+  engine_line_mate?: number | null;
+  played_move_eval_cp?: number | null;
+  played_move_mate?: number | null;
+  engine_name?: string | null;
+  analysis_depth?: number | null;
 };
 
 export type StudyModeConfig = {
@@ -380,31 +386,7 @@ export function GameInspector({
                   <>
                     <div className="study-solution-block">
                       <p className="panel-label">Solution</p>
-                      <div className="study-solution-copy">
-                        <p>
-                          <strong>Solution:</strong>{" "}
-                          {formatMaybePlyMove(
-                            currentCriticalMoment.played_move_ply_index,
-                            currentCriticalMoment.engine_best_move,
-                            "No engine recommendation available.",
-                          )}
-                        </p>
-                        <p>
-                          <strong>Engine line:</strong>{" "}
-                          {formatPrincipalVariation(
-                            currentCriticalMoment.played_move_ply_index,
-                            currentCriticalMoment.engine_principal_variation ?? [],
-                          )}
-                        </p>
-                        <p>
-                          <strong>Played in game:</strong>{" "}
-                          {formatMaybePlyMove(
-                            currentCriticalMoment.played_move_ply_index,
-                            currentCriticalMoment.played_move_san,
-                            "Not available.",
-                          )}
-                        </p>
-                      </div>
+                      <CriticalMomentSolution moment={currentCriticalMoment} />
                     </div>
 
                     <button
@@ -646,11 +628,7 @@ export function GameInspector({
             {isCriticalSolutionRevealed ? (
               <div className="critical-solution-block">
                 <p className="panel-label">Solution</p>
-                <MoveLineList
-                  emptyText="There are no more moves in the game."
-                  moves={position.next_moves}
-                  startPlyIndex={position.ply_index + 1}
-                />
+                <CriticalMomentSolution moment={currentCriticalMoment} />
               </div>
             ) : (
               <button
@@ -686,6 +664,43 @@ export function GameInspector({
         )}
       </aside>
     </section>
+  );
+}
+
+function CriticalMomentSolution({ moment }: { moment: CriticalMoment }) {
+  const engineSummary = formatAnalysisSummary({
+    evalCp: moment.engine_line_eval_cp,
+    mate: moment.engine_line_mate,
+    engineName: moment.engine_name,
+    depth: moment.analysis_depth,
+  });
+  const playedSummary = formatAnalysisSummary({
+    evalCp: moment.played_move_eval_cp,
+    mate: moment.played_move_mate,
+    engineName: moment.engine_name,
+    depth: moment.analysis_depth,
+  });
+
+  return (
+    <div className="study-solution-copy">
+      <p>
+        <strong>Engine line</strong>
+        {engineSummary ? ` ${engineSummary}` : ""}:{" "}
+        {formatPrincipalVariation(
+          moment.played_move_ply_index,
+          moment.engine_principal_variation ?? [],
+        )}
+      </p>
+      <p>
+        <strong>Played move</strong>
+        {playedSummary ? ` ${playedSummary}` : ""}:{" "}
+        {formatMaybePlyMove(
+          moment.played_move_ply_index,
+          moment.played_move_san,
+          "Not available.",
+        )}
+      </p>
+    </div>
   );
 }
 
@@ -745,6 +760,45 @@ function formatMaybePlyMove(
   }
 
   return formatPlyMove(plyIndex, sanMove);
+}
+
+function formatAnalysisSummary({
+  evalCp,
+  mate,
+  engineName,
+  depth,
+}: {
+  evalCp: number | null | undefined;
+  mate: number | null | undefined;
+  engineName: string | null | undefined;
+  depth: number | null | undefined;
+}): string {
+  const parts = [
+    formatEvaluation(evalCp, mate),
+    engineName?.trim() || null,
+    typeof depth === "number" ? `depth:${depth}` : null,
+  ].filter((part): part is string => Boolean(part));
+
+  return parts.length > 0 ? `{${parts.join(" ")}}` : "";
+}
+
+function formatEvaluation(
+  evalCp: number | null | undefined,
+  mate: number | null | undefined,
+): string | null {
+  if (typeof evalCp === "number") {
+    const pawns = Math.round((evalCp / 100) * 10) / 10;
+    const normalizedPawns = Object.is(pawns, -0) ? 0 : pawns;
+    const sign = normalizedPawns > 0 ? "+" : "";
+    return `${sign}${normalizedPawns.toFixed(1)}`;
+  }
+
+  if (typeof mate === "number") {
+    const sign = mate > 0 ? "+" : "";
+    return `M${sign}${mate}`;
+  }
+
+  return null;
 }
 
 function formatPrincipalVariation(

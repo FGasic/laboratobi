@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -118,6 +119,7 @@ def analyse_board(
     fen: str,
     depth_used: int,
 ) -> dict[str, Any]:
+    engine_name = get_engine_name(engine)
     info = engine.analyse(board, chess.engine.Limit(depth=depth_used))
     score = info.get("score")
     if score is None:
@@ -133,6 +135,7 @@ def analyse_board(
 
     return {
         "fen": fen,
+        "engine_name": engine_name,
         "evaluation_cp": evaluation_cp,
         "mate": mate,
         "evaluation_white_cp": evaluation_white_cp,
@@ -150,6 +153,7 @@ def analyse_board_top_moves(
     depth_used: int,
     multipv: int,
 ) -> list[dict[str, Any]]:
+    engine_name = get_engine_name(engine)
     infos = engine.analyse(
         board,
         chess.engine.Limit(depth=depth_used),
@@ -175,6 +179,7 @@ def analyse_board_top_moves(
         top_moves.append(
             {
                 "fen": fen,
+                "engine_name": engine_name,
                 "move": principal_variation[0].uci(),
                 "evaluation_cp": evaluation_cp,
                 "mate": mate,
@@ -189,6 +194,16 @@ def analyse_board_top_moves(
         )
 
     return sorted(top_moves, key=lambda move: move["multipv"])
+
+
+def get_engine_name(engine: chess.engine.SimpleEngine) -> str:
+    engine_id = getattr(engine, "id", None)
+    if isinstance(engine_id, Mapping):
+        raw_name = engine_id.get("name")
+        if isinstance(raw_name, str) and raw_name.strip():
+            return raw_name.strip()
+
+    return "Stockfish"
 
 
 def parse_board(fen: str) -> chess.Board:

@@ -16,6 +16,7 @@ from app.services.stockfish import (
 BASELINE_DEPTH = 20
 BORDERLINE_RECHECK_DEPTH = 24
 OBJECTIVE_GAP_THRESHOLD_CP = 80
+MAX_ABS_INITIAL_EVAL_CP = 80
 EQUIVALENT_BAND_CP = 50
 DRAWISH_BAND_CP = 120
 BORDERLINE_MARGIN_CP = 40
@@ -28,6 +29,7 @@ CriticalMomentInvalidReason = Literal[
     "missing_engine_principal_variation",
     "review_runtime_failed",
     "invalid_review_payload",
+    "initial_eval_out_of_range",
     "objective_gap_too_small",
     "equivalent_move_band",
     "depth24_recheck_failed",
@@ -50,6 +52,7 @@ class CriticalMomentReviewValidation:
     normalized_engine_best_move: str | None
     best_eval_cp: int | None = None
     played_eval_cp: int | None = None
+    initial_eval_cp: int | None = None
     objective_gap_cp: int | None = None
     objective_gap_depth: int | None = None
     objective_gap_reason: str | None = None
@@ -69,6 +72,7 @@ class ObjectiveGapEvaluation:
     equivalent_move_band_reject: bool
     equivalent_move_band_reason: str | None
     borderline_recheck: bool
+    initial_eval_cp: int | None = None
     depth24_gap_cp: int | None = None
     depth24_recheck_failed: bool = False
     error: str | None = None
@@ -121,7 +125,10 @@ def validate_critical_moment_review(
     elif objective_gap is not None and objective_gap.equivalent_move_band_reject:
         invalid_reason = "equivalent_move_band"
     elif objective_gap is not None and not objective_gap.objective_gap_pass:
-        invalid_reason = "objective_gap_too_small"
+        if objective_gap.objective_gap_reason == "initial_eval_out_of_range":
+            invalid_reason = "initial_eval_out_of_range"
+        else:
+            invalid_reason = "objective_gap_too_small"
 
     return CriticalMomentReviewValidation(
         is_valid=invalid_reason is None,
@@ -143,6 +150,9 @@ def validate_critical_moment_review(
         best_eval_cp=objective_gap.best_eval_cp if objective_gap is not None else None,
         played_eval_cp=(
             objective_gap.played_eval_cp if objective_gap is not None else None
+        ),
+        initial_eval_cp=(
+            objective_gap.initial_eval_cp if objective_gap is not None else None
         ),
         objective_gap_cp=(
             objective_gap.objective_gap_cp if objective_gap is not None else None
@@ -256,6 +266,7 @@ def evaluate_candidate_depth20_then_depth24_if_borderline(
             equivalent_move_band_reject=False,
             equivalent_move_band_reason=None,
             borderline_recheck=True,
+            initial_eval_cp=baseline.initial_eval_cp,
             depth24_gap_cp=None,
             depth24_recheck_failed=True,
             error=recheck.error,
@@ -271,6 +282,7 @@ def evaluate_candidate_depth20_then_depth24_if_borderline(
         equivalent_move_band_reject=recheck.equivalent_move_band_reject,
         equivalent_move_band_reason=recheck.equivalent_move_band_reason,
         borderline_recheck=True,
+        initial_eval_cp=recheck.initial_eval_cp,
         depth24_gap_cp=recheck.objective_gap_cp,
     )
 
@@ -307,8 +319,8 @@ def evaluate_objective_gap(
     played_board.push(played_move)
 
     try:
-        best_evaluation, played_evaluation = evaluate_fens(
-            [best_board.fen(), played_board.fen()],
+        initial_evaluation, best_evaluation, played_evaluation = evaluate_fens(
+            [board.fen(), best_board.fen(), played_board.fen()],
             depth,
         )
     except (StockfishConfigurationError, StockfishEngineError, TimeoutError) as exc:
@@ -326,6 +338,7 @@ def evaluate_objective_gap(
         )
 
     try:
+        initial_eval_cp = evaluation_to_white_cp(initial_evaluation)
         side_multiplier = 1 if board.turn == chess.WHITE else -1
         best_eval_cp = side_multiplier * evaluation_to_white_cp(best_evaluation)
         played_eval_cp = side_multiplier * evaluation_to_white_cp(played_evaluation)
@@ -341,6 +354,22 @@ def evaluate_objective_gap(
             equivalent_move_band_reason=None,
             borderline_recheck=borderline_recheck,
             error=str(exc),
+        )
+
+    if not is_initial_eval_in_critical_range(initial_eval_cp):
+        return ObjectiveGapEvaluation(
+            best_eval_cp=best_eval_cp,
+            played_eval_cp=played_eval_cp,
+            objective_gap_cp=None,
+            depth=int(initial_evaluation.get("depth_used") or depth),
+            objective_gap_pass=False,
+            objective_gap_reason="initial_eval_out_of_range",
+            equivalent_move_band_reject=False,
+            equivalent_move_band_reason=(
+                f"abs(initial_eval_cp) > {MAX_ABS_INITIAL_EVAL_CP}"
+            ),
+            borderline_recheck=borderline_recheck,
+            initial_eval_cp=initial_eval_cp,
         )
 
     objective_gap_cp = best_eval_cp - played_eval_cp
@@ -365,6 +394,7 @@ def evaluate_objective_gap(
         equivalent_move_band_reject=equivalent_move_band_reject,
         equivalent_move_band_reason=equivalent_move_band_reason,
         borderline_recheck=borderline_recheck,
+        initial_eval_cp=initial_eval_cp,
     )
 
 
@@ -444,6 +474,13 @@ def evaluation_to_white_cp(evaluation: dict[str, object]) -> int:
     raise StockfishEngineError("Stockfish evaluation has no centipawn or mate score.")
 
 
+def is_initial_eval_in_critical_range(initial_eval_cp: int | None) -> bool:
+    return (
+        initial_eval_cp is not None
+        and abs(initial_eval_cp) <= MAX_ABS_INITIAL_EVAL_CP
+    )
+
+
 def is_drawish_pair(best_eval_cp: int | None, played_eval_cp: int | None) -> bool:
     if best_eval_cp is None or played_eval_cp is None:
         return False
@@ -460,12 +497,13 @@ def log_objective_gap_eval(
     evaluation: ObjectiveGapEvaluation,
 ) -> None:
     logger.info(
-        "%s depth=%s best_eval=%s played_eval=%s gap=%s "
+        "%s depth=%s initial_eval=%s best_eval=%s played_eval=%s gap=%s "
         "objective_gap_pass=%s objective_gap_reason=%s "
         "equivalent_move_band_reject=%s equivalent_move_band_reason=%s "
         "borderline_candidate_rechecked=%s error=%s",
         event,
         evaluation.depth,
+        format_optional_int(evaluation.initial_eval_cp),
         format_optional_int(evaluation.best_eval_cp),
         format_optional_int(evaluation.played_eval_cp),
         format_optional_int(evaluation.objective_gap_cp),
@@ -490,7 +528,7 @@ def log_critical_moment_validation(
         "reason=%s normalized_played_move=%s normalized_engine_best_move=%s "
         "has_engine_best_move=%s has_engine_principal_variation=%s "
         "review_runtime_ok=%s objective_gap_pass=%s "
-        "equivalent_move_band_reject=%s best_eval=%s played_eval=%s gap=%s "
+        "equivalent_move_band_reject=%s initial_eval=%s best_eval=%s played_eval=%s gap=%s "
         "depth=%s borderline_recheck=%s depth24_gap=%s final_valid=%s",
         game_id,
         ply_index,
@@ -503,6 +541,7 @@ def log_critical_moment_validation(
         format_bool(validation.review_runtime_ok),
         format_bool(validation.objective_gap_pass),
         format_bool(validation.equivalent_move_band_reject),
+        format_optional_int(validation.initial_eval_cp),
         format_optional_int(validation.best_eval_cp),
         format_optional_int(validation.played_eval_cp),
         format_optional_int(validation.objective_gap_cp),

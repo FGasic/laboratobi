@@ -52,6 +52,7 @@ from app.services.critical_moment_validation import (
     CriticalMomentReviewValidation,
     log_critical_moment_review_runtime_failed,
     log_critical_moment_validation,
+    is_initial_eval_in_critical_range,
     validate_critical_moment_review,
     validate_critical_moment_review_with_objective_gap,
 )
@@ -921,6 +922,9 @@ def build_swing_candidates(
         evaluation_after_cp = evaluation_after["evaluation_white_cp"]
 
         if evaluation_before_cp is None or evaluation_after_cp is None:
+            continue
+
+        if not is_initial_eval_in_critical_range(evaluation_before_cp):
             continue
 
         if has_mate_in_one(evaluation_before) or has_mate_in_one(evaluation_after):
